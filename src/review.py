@@ -237,11 +237,14 @@ class CodeReviewer:
 
     @staticmethod
     def _fetch_branch(branch: str) -> None:
-        subprocess.run(
+        result = subprocess.run(
             ["git", "fetch", "origin", branch],
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            snippet = result.stderr[:300].strip()
+            print(f"⚠️  git fetch failed: {snippet}", file=sys.stderr)
 
     @staticmethod
     def _run_diff(cmd: list) -> str:
