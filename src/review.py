@@ -35,7 +35,7 @@ class Config:
         return cls(
             api_key=api_key,
             threshold=int(os.getenv("AI_THRESHOLD", "70")),
-            model=os.getenv("AI_MODEL", "llama3-70b-8192"),
+            model=os.getenv("AI_MODEL", "llama-3.3-70b-versatile"),
             custom_rules=os.getenv("AI_CUSTOM_RULES") or None,
         )
 
@@ -292,7 +292,13 @@ class CodeReviewer:
                 },
                 timeout=self._config.timeout,
             )
-            response.raise_for_status()
+            if not response.ok:
+                try:
+                    api_msg = response.json().get("error", {}).get("message", response.text)
+                except Exception:
+                    api_msg = response.text
+                return 0, f"API error {response.status_code}: {api_msg}"
+
             content = response.json()["choices"][0]["message"]["content"]
             result = json.loads(
                 content.replace("```json", "").replace("```", "").strip()
