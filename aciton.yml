@@ -1,0 +1,33 @@
+name: 'AI Code Review Gate'
+description: 'Оценивает PR через AI с поддержкой кастомных правил'
+author: 'Your Name'
+
+inputs:
+  groq-api-key:
+    description: 'API ключ для Groq'
+    required: true
+  threshold:
+    description: 'Минимальный проходной балл (0-100)'
+    required: false
+    default: '70'
+  model:
+    description: 'Модель для оценки'
+    required: false
+    default: 'llama3-70b-8192'
+  custom-rules:
+    description: 'Кастомные правила оценки (заменяют стандартные)'
+    required: false
+    default: ''
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  args:
+    - ${{ inputs.groq-api-key }}
+    - ${{ inputs.threshold }}
+    - ${{ inputs.model }}
+    - ${{ inputs.custom-rules }}
+
+branding:
+  icon: 'check-circle'
+  color: 'green'
