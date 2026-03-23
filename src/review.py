@@ -237,9 +237,7 @@ class CodeReviewer:
     # ------------------------------------------------------------------
 
     def get_diff(self) -> str:
-        """Returns the git diff for the current PR."""
-        base_ref = os.getenv("GITHUB_BASE_REF", "main")
-
+        """Returns the full PR diff (all commits, not just the last one)."""
         if not os.path.exists(".git"):
             print(
                 "⚠️  .git directory not found. "
@@ -248,6 +246,17 @@ class CodeReviewer:
             )
             return ""
 
+        # Strategy 1 — GitHub event payload: most reliable source for PR base SHA.
+        # Always available in GitHub Actions; unaffected by remote tracking ref state.
+        base_sha = self._base_sha_from_event()
+        if base_sha:
+            diff = self._run_diff(["git", "diff", base_sha, "HEAD"])
+            if diff is not None:
+                print(f"📊 Diff: {len(diff):,} chars from base commit {base_sha[:7]}")
+                return diff
+
+        # Strategy 2 — remote tracking branch (origin/<base_ref>).
+        base_ref = os.getenv("GITHUB_BASE_REF", "main")
         remote_ref = f"origin/{base_ref}"
 
         if not self._ref_exists(remote_ref):
@@ -255,16 +264,17 @@ class CodeReviewer:
             self._fetch_branch(base_ref)
 
         if self._ref_exists(remote_ref):
-            return self._run_diff(["git", "diff", f"{remote_ref}...HEAD"])
+            diff = self._run_diff(["git", "diff", f"{remote_ref}...HEAD"])
+            if diff is not None:
+                print(f"📊 Diff: {len(diff):,} chars against {remote_ref}")
+                return diff
 
+        # Strategy 3 — last commit only (last resort, covers single-commit PRs).
         if self._ref_exists("HEAD~1"):
-            print(f"⚠️  Falling back to HEAD~1..HEAD diff.", file=sys.stderr)
-            return self._run_diff(["git", "diff", "HEAD~1", "HEAD"])
+            print("⚠️  Falling back to HEAD~1..HEAD (last commit only).", file=sys.stderr)
+            return self._run_diff(["git", "diff", "HEAD~1", "HEAD"]) or ""
 
-        print(
-            "⚠️  Cannot determine diff range — shallow clone with a single commit?",
-            file=sys.stderr,
-        )
+        print("⚠️  Cannot determine diff range.", file=sys.stderr)
         return ""
 
     # ------------------------------------------------------------------
@@ -326,6 +336,20 @@ class CodeReviewer:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _base_sha_from_event() -> Optional[str]:
+        """Reads the PR base commit SHA from the GitHub Actions event payload."""
+        event_path = os.getenv("GITHUB_EVENT_PATH", "")
+        if not event_path or not os.path.exists(event_path):
+            return None
+        try:
+            with open(event_path) as fh:
+                event = json.load(fh)
+            sha = event.get("pull_request", {}).get("base", {}).get("sha")
+            return sha or None
+        except Exception:
+            return None
 
     @staticmethod
     def _ref_exists(ref: str) -> bool:
