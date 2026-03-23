@@ -1,6 +1,5 @@
 name: 'AI Code Review Gate'
-description: 'Оценивает PR через AI с поддержкой кастомных правил'
-author: 'Your Name'
+description: 'Оценивает PR через AI'
 
 inputs:
   groq-api-key:
@@ -10,12 +9,8 @@ inputs:
     description: 'Минимальный проходной балл (0-100)'
     required: false
     default: '70'
-  model:
-    description: 'Модель для оценки'
-    required: false
-    default: 'llama3-70b-8192'
   custom-rules:
-    description: 'Кастомные правила оценки (заменяют стандартные)'
+    description: 'Правила оценки'
     required: false
     default: ''
 
@@ -25,7 +20,6 @@ runs:
   args:
     - ${{ inputs.groq-api-key }}
     - ${{ inputs.threshold }}
-    - ${{ inputs.model }}
     - ${{ inputs.custom-rules }}
 
 branding:

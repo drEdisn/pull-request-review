@@ -22,7 +22,6 @@ import requests
 class Config:
     api_key: str
     threshold: int
-    model: str
     custom_rules: Optional[str]
     api_url: str = "https://api.groq.com/openai/v1/chat/completions"
     max_diff_length: int = 12000
@@ -34,8 +33,7 @@ class Config:
         return cls(
             api_key=sys.argv[1] if len(sys.argv) > 1 else os.getenv("GROQ_API_KEY", ""),
             threshold=int(sys.argv[2]) if len(sys.argv) > 2 else 70,
-            model=sys.argv[3] if len(sys.argv) > 3 else "llama3-70b-8192",
-            custom_rules=sys.argv[4] if len(sys.argv) > 4 else None,
+            custom_rules=sys.argv[3] if len(sys.argv) > 3 else None
         )
 
 
@@ -117,7 +115,25 @@ class CodeReviewer:
             "Content-Type": "application/json",
         })
 
+    def debug_git():
+        cmds = [
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            ["git", "branch", "-a"],
+            ["git", "log", "--oneline", "-3"],
+            ["git", "remote", "-v"],
+        ]
+        print("\n🔍 GIT DEBUG INFO:", file=sys.stderr)
+        for cmd in cmds:
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                print(f"{' '.join(cmd)}:\n{res.stdout}", file=sys.stderr)
+            except Exception as e:
+                print(f"❌ {' '.join(cmd)}: {e}", file=sys.stderr)
+        print("-" * 50, file=sys.stderr)
+
     def get_diff(self) -> str:
+        self.debug_git()
+
         """Получает git diff текущего PR."""
         base_ref = os.getenv("GITHUB_BASE_REF", "main")
         try:
@@ -142,7 +158,6 @@ class CodeReviewer:
             response = self.session.post(
                 self.config.api_url,
                 json={
-                    "model": self.config.model,
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": prompt},
@@ -186,7 +201,7 @@ def main() -> None:
     rule_engine = RuleEngine(config.custom_rules, config.rules_timeout)
     reviewer = CodeReviewer(config, rule_engine)
 
-    print(f"🚀 AI Review | Модель: {config.model} | Порог: {config.threshold}")
+    print(f"🚀 AI Review | Порог: {config.threshold}")
     
     # Отображение источника правил
     if not config.custom_rules:
