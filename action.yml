@@ -1,0 +1,38 @@
+name: 'AI Code Review Gate'
+description: 'Evaluates pull request code quality via an LLM and fails the check below a configurable score threshold.'
+
+inputs:
+  groq-api-key:
+    description: 'Groq API key (store as a repository secret).'
+    required: true
+  threshold:
+    description: 'Minimum passing score (0–100).'
+    required: false
+    default: '70'
+  ai-model:
+    description: 'Groq model to use for the review.'
+    required: false
+    default: 'llama3-70b-8192'
+  custom-rules:
+    description: 'Custom evaluation rules — plain text or a URL to a rules file.'
+    required: false
+    default: ''
+
+outputs:
+  ai_score:
+    description: 'Numeric score assigned by the AI reviewer (0–100).'
+  ai_comment:
+    description: 'Textual review comment returned by the AI reviewer.'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    GROQ_API_KEY: ${{ inputs.groq-api-key }}
+    AI_THRESHOLD: ${{ inputs.threshold }}
+    AI_MODEL: ${{ inputs.ai-model }}
+    AI_CUSTOM_RULES: ${{ inputs.custom-rules }}
+
+branding:
+  icon: 'check-circle'
+  color: 'green'

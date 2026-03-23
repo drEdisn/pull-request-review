@@ -1,13 +1,17 @@
-FROM python:3.9-slim
+FROM python:3.9-slim-bookworm
 
-# Устанавливаем git и очищаем кэш для уменьшения размера образа
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && adduser --disabled-password --no-create-home --gecos "" reviewer
 
 WORKDIR /action
 
-COPY src/review.py /action/review.py
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install --no-cache-dir requests
+COPY src/review.py review.py
+
+USER reviewer
 
 ENTRYPOINT ["python", "/action/review.py"]

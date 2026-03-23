@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""
-AI Code Review Gate
-Оценивает качество кода в PR через LLM с поддержкой кастомных правил и URL.
-"""
+"""AI Code Review Gate — evaluates PR code quality via LLM."""
 
-import os
-import sys
 import json
+import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -15,8 +12,9 @@ import requests
 
 
 # ==============================================================================
-# КОНФИГУРАЦИЯ
+# Configuration
 # ==============================================================================
+
 
 @dataclass
 class Config:
@@ -25,44 +23,47 @@ class Config:
     model: str
     custom_rules: Optional[str]
     api_url: str = "https://api.groq.com/openai/v1/chat/completions"
-    max_diff_length: int = 12000
+    max_diff_length: int = 12_000
     timeout: int = 30
     rules_timeout: int = 10
 
     @classmethod
     def from_env(cls) -> "Config":
+        api_key = os.getenv("GROQ_API_KEY", "")
+        if not api_key:
+            sys.exit("❌ GROQ_API_KEY is not set.")
         return cls(
-            api_key=sys.argv[1] if len(sys.argv) > 1 else os.getenv("GROQ_API_KEY", ""),
-            threshold=int(sys.argv[2]) if len(sys.argv) > 2 else 70,
+            api_key=api_key,
+            threshold=int(os.getenv("AI_THRESHOLD", "70")),
             model=os.getenv("AI_MODEL", "llama3-70b-8192"),
-            custom_rules=sys.argv[3] if len(sys.argv) > 3 else None,
+            custom_rules=os.getenv("AI_CUSTOM_RULES") or None,
         )
 
 
 # ==============================================================================
-# ПРАВИЛА И ПРОМПТЫ
+# Rules & Prompts
 # ==============================================================================
 
-DEFAULT_RULES = """
-1. Безопасность (30 баллов) — инъекции, секреты, уязвимости.
-2. Качество кода (25 баллов) — стиль, читаемость, сложность.
-3. Логика (25 баллов) — архитектура, обработка ошибок, SOLID.
-4. Тесты (20 баллов) — покрытие новой функциональности.
+DEFAULT_RULES = """\
+1. Security (30 pts) — injections, exposed secrets, vulnerabilities.
+2. Code quality (25 pts) — style, readability, complexity.
+3. Logic (25 pts) — architecture, error handling, SOLID principles.
+4. Tests (20 pts) — coverage of new functionality.
 
-Требования:
-- Верни строго JSON без markdown-разметки.
-- Будь строгим: за критичные ошибки ставь < 50 баллов.
-- Если изменений нет — ставь 100.
+Requirements:
+- Return strict JSON with no markdown fences.
+- Be strict: assign < 50 for critical errors.
+- If there are no changes — assign 100.
 """
 
 SYSTEM_PROMPT = (
-    "Ты — старший технический ревьюер. "
-    "Твоя задача — оценить код и вернуть ТОЛЬКО валидный JSON: "
-    '{"score": 0-100, "comment": "текст на русском"}.'
+    "You are a senior technical code reviewer. "
+    "Evaluate the provided diff and return ONLY valid JSON: "
+    '{"score": <0-100>, "comment": "<review text>"}.'
 )
 
-REVIEW_PROMPT_TEMPLATE = """
-Используй следующие правила для оценки:
+REVIEW_PROMPT_TEMPLATE = """\
+Use the following rules for evaluation:
 
 {rules}
 
@@ -72,97 +73,121 @@ GIT DIFF:
 
 
 # ==============================================================================
-# ЛОГИКА
+# Rule Engine
 # ==============================================================================
 
+
 class RuleEngine:
-    """Управляет правилами оценки (дефолтные, текст или URL)."""
-    
-    def __init__(self, custom_rules: Optional[str] = None, timeout: int = 10):
-        self.custom_rules = custom_rules
-        self.timeout = timeout
-    
-    def _is_url(self, value: str) -> bool:
-        return value.startswith("http://") or value.startswith("https://")
-    
-    def _fetch_rules_from_url(self, url: str) -> str:
+    """Manages evaluation rules — default, inline text, or fetched from a URL."""
+
+    def __init__(self, custom_rules: Optional[str] = None, timeout: int = 10) -> None:
+        self._custom_rules = custom_rules
+        self._timeout = timeout
+
+    @staticmethod
+    def _is_url(value: str) -> bool:
+        return value.startswith(("http://", "https://"))
+
+    def _fetch_url(self, url: str) -> str:
         try:
-            response = requests.get(url, timeout=self.timeout)
+            response = requests.get(url, timeout=self._timeout)
             response.raise_for_status()
             return response.text.strip()
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Не удалось загрузить правила из URL: {str(e)}")
-    
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Failed to load rules from URL: {exc}") from exc
+
     def get_rules(self) -> str:
-        if not self.custom_rules:
+        if not self._custom_rules:
             return DEFAULT_RULES
-        
-        if self._is_url(self.custom_rules):
-            return self._fetch_rules_from_url(self.custom_rules)
-        
-        return self.custom_rules
-    
+        if self._is_url(self._custom_rules):
+            return self._fetch_url(self._custom_rules)
+        if os.path.isfile(self._custom_rules):
+            with open(self._custom_rules) as fh:
+                return fh.read().strip()
+        return self._custom_rules
+
     def build_prompt(self, diff: str) -> str:
-        rules = self.get_rules()
-        return REVIEW_PROMPT_TEMPLATE.format(rules=rules, diff=diff)
+        return REVIEW_PROMPT_TEMPLATE.format(rules=self.get_rules(), diff=diff)
+
+    @property
+    def source_label(self) -> str:
+        if not self._custom_rules:
+            return "Default"
+        if self._is_url(self._custom_rules):
+            return f"URL: {self._custom_rules}"
+        if os.path.isfile(self._custom_rules):
+            return f"File: {self._custom_rules}"
+        return "Custom (inline)"
+
+
+# ==============================================================================
+# Code Reviewer
+# ==============================================================================
 
 
 class CodeReviewer:
-    def __init__(self, config: Config, rule_engine: RuleEngine):
-        self.config = config
-        self.rule_engine = rule_engine
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        })
+    def __init__(self, config: Config, rule_engine: RuleEngine) -> None:
+        self._config = config
+        self._rule_engine = rule_engine
+        self._session = requests.Session()
+        self._session.headers.update(
+            {
+                "Authorization": f"Bearer {config.api_key}",
+                "Content-Type": "application/json",
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # Git diff
+    # ------------------------------------------------------------------
 
     def get_diff(self) -> str:
-        """Получает git diff текущего PR."""
+        """Returns the git diff for the current PR."""
         base_ref = os.getenv("GITHUB_BASE_REF", "main")
-        
-        # Проверяем наличие .git директории
+
         if not os.path.exists(".git"):
-            print("⚠️ Директория .git не найдена. Запустите actions/checkout перед этим шагом.", file=sys.stderr)
+            print(
+                "⚠️  .git directory not found. "
+                "Run actions/checkout before this step.",
+                file=sys.stderr,
+            )
             return ""
 
-        # Проверяем наличие origin/{base_ref}
-        try:
-            subprocess.run(
-                ["git", "rev-parse", "--verify", f"origin/{base_ref}"],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            diff_cmd = ["git", "diff", f"origin/{base_ref}...HEAD"]
-        except subprocess.CalledProcessError:
-            # Если origin/{base_ref} нет, пробуем fallback
-            print(f"⚠️ Ветка origin/{base_ref} не найдена, пробуем fallback...", file=sys.stderr)
-            diff_cmd = ["git", "diff", "HEAD~1..HEAD"]
+        remote_ref = f"origin/{base_ref}"
 
-        try:
-            result = subprocess.run(
-                diff_cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            return result.stdout
-        except subprocess.CalledProcessError as e:
-            print(f"⚠️ Ошибка git diff: {e.stderr}", file=sys.stderr)
-            return ""
+        if not self._ref_exists(remote_ref):
+            print(f"⚠️  {remote_ref} not found locally, fetching...", file=sys.stderr)
+            self._fetch_branch(base_ref)
+
+        if self._ref_exists(remote_ref):
+            return self._run_diff(["git", "diff", f"{remote_ref}...HEAD"])
+
+        if self._ref_exists("HEAD~1"):
+            print(f"⚠️  Falling back to HEAD~1..HEAD diff.", file=sys.stderr)
+            return self._run_diff(["git", "diff", "HEAD~1", "HEAD"])
+
+        print(
+            "⚠️  Cannot determine diff range — shallow clone with a single commit?",
+            file=sys.stderr,
+        )
+        return ""
+
+    # ------------------------------------------------------------------
+    # LLM evaluation
+    # ------------------------------------------------------------------
 
     def evaluate(self, diff: str) -> Tuple[int, str]:
-        """Отправляет код на оценку и возвращает (балл, комментарий)."""
+        """Sends the diff to the LLM and returns (score, comment)."""
         if not diff:
-            return 100, "Изменения отсутствуют"
+            return 100, "No changes detected."
 
-        prompt = self.rule_engine.build_prompt(diff[:self.config.max_diff_length])
+        prompt = self._rule_engine.build_prompt(diff[: self._config.max_diff_length])
 
         try:
-            response = self.session.post(
-                self.config.api_url,
+            response = self._session.post(
+                self._config.api_url,
                 json={
+                    "model": self._config.model,
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": prompt},
@@ -170,66 +195,91 @@ class CodeReviewer:
                     "temperature": 0.1,
                     "max_tokens": 500,
                 },
-                timeout=self.config.timeout,
+                timeout=self._config.timeout,
             )
             response.raise_for_status()
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-
+            content = response.json()["choices"][0]["message"]["content"]
             result = json.loads(
                 content.replace("```json", "").replace("```", "").strip()
             )
             score = max(0, min(100, int(result.get("score", 0))))
-            comment = result.get("comment", "Нет комментария")
+            comment = result.get("comment", "No comment returned.")
             return score, comment
 
-        except Exception as e:
-            return 0, f"Ошибка анализа: {str(e)}"
+        except Exception as exc:  # noqa: BLE001
+            return 0, f"Analysis error: {exc}"
+
+    # ------------------------------------------------------------------
+    # GitHub Actions output
+    # ------------------------------------------------------------------
 
     def save_output(self, score: int, comment: str) -> None:
-        """Сохраняет результаты для GitHub Actions."""
+        """Writes step outputs to $GITHUB_OUTPUT."""
         output_file = os.getenv("GITHUB_OUTPUT")
         if not output_file:
             return
+        with open(output_file, "a") as fh:
+            fh.write(f"ai_score={score}\n")
+            fh.write(f"ai_comment={comment.replace(chr(10), '%0A')}\n")
 
-        with open(output_file, "a") as f:
-            f.write(f"ai_score={score}\n")
-            # Экранируем переносы строк в комментарии для формата GITHUB_OUTPUT
-            safe_comment = comment.replace("\n", "%0A")
-            f.write(f"ai_comment={safe_comment}\n")
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ref_exists(ref: str) -> bool:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", ref],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+
+    @staticmethod
+    def _fetch_branch(branch: str) -> None:
+        subprocess.run(
+            ["git", "fetch", "origin", branch],
+            capture_output=True,
+            text=True,
+        )
+
+    @staticmethod
+    def _run_diff(cmd: list) -> str:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            # Truncate to avoid dumping git's full help text into the log.
+            snippet = result.stderr[:300].strip()
+            print(f"⚠️  git diff failed: {snippet}", file=sys.stderr)
+            return ""
+        return result.stdout
 
 
 # ==============================================================================
-# ТОЧКА ВХОДА
+# Entry point
 # ==============================================================================
+
 
 def main() -> None:
     config = Config.from_env()
     rule_engine = RuleEngine(config.custom_rules, config.rules_timeout)
     reviewer = CodeReviewer(config, rule_engine)
 
-    print(f"🚀 AI Review | Модель: {config.model} | Порог: {config.threshold}")
-    
-    # Отображение источника правил
-    if not config.custom_rules:
-        rules_source = "По умолчанию"
-    elif rule_engine._is_url(config.custom_rules):
-        rules_source = f"URL: {config.custom_rules}"
-    else:
-        rules_source = "Кастомные (inline)"
-    
-    print(f"📜 Правила: {rules_source}")
+    print(f"🚀 AI Review | Model: {config.model} | Threshold: {config.threshold}")
+    print(f"📜 Rules: {rule_engine.source_label}")
     print("-" * 50)
 
     diff = reviewer.get_diff()
-    
     if not diff:
-        print("⚠️ Git diff пустой. Проверьте шаг actions/checkout (fetch-depth: 0).", file=sys.stderr)
-    
+        print(
+            "⚠️  Empty git diff. "
+            "Make sure actions/checkout runs with fetch-depth: 0.",
+            file=sys.stderr,
+        )
+
     score, comment = reviewer.evaluate(diff)
 
-    print(f"🎯 Балл: {score}/100")
-    print(f"💬 Комментарий: {comment}")
+    print(f"🎯 Score:   {score}/100")
+    print(f"💬 Comment: {comment}")
     print("-" * 50)
 
     reviewer.save_output(score, comment)
@@ -237,7 +287,7 @@ def main() -> None:
     if score < config.threshold:
         print(f"❌ FAILED ({score} < {config.threshold})")
         sys.exit(1)
-    
+
     print("✅ PASSED")
     sys.exit(0)
 
