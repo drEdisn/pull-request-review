@@ -3,7 +3,7 @@ FROM python:3.9-slim-bookworm
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
-    && git config --global --add safe.directory '*'
+    && git config --system --add safe.directory '*'
 
 WORKDIR /action
 

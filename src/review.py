@@ -56,6 +56,100 @@ Requirements:
 - If there are no changes — assign 100.
 """
 
+ANGULAR_RULES = """\
+ANGULAR CODING STANDARDS (FULL COMPACT)
+=======================================
+
+[ANGULAR CORE]
+1. Selector prefix: service-based (cp-, cc-, cb-)
+2. changeDetection: OnPush (all components)
+3. standalone: true (default)
+4. ❌ template/styles in @Component decorator
+5. Pipes: pure: true (default)
+6. ❌ any type | ❌ eslint-ignore
+7. Components = independent logical units
+8. Prefer latest Angular API (current version)
+9. ❌ public/protected injects (use private)
+
+[NAMING]
+1. Full/clear names or obvious abbreviations only
+    ❌ val/updateVal(a) → ✅ name/updateName(newName)
+2. Methods start with verb
+    ❌ nameDenis()/nameUpdatedWithNewName() → ✅ initName()/updateName()
+3. Booleans: is/are prefix
+    ❌ ready/participantsExists → ✅ isReady/areParticipantsExists
+4. Default values priority for props/vars
+    ❌ entity!:Entity; exists!:boolean → ✅ entity:Entity|null=null; exists=false
+
+[GENERAL LOGIC]
+1. ❌ Logic inside if-blocks → extract methods (SRP)
+    ❌ if(a){if(b){...}} → ✅ if(!a)return; ... doX(); if(!b)return; doY();
+2. Declare vars at usage point only
+    ❌ const a=fn1(),b=fn2(),e=createEntity(a,b);return e;
+    ✅ return createEntity(fn1(),fn2());
+3. Strict equality === only (never ==)
+
+[PROPERTIES/METHODS]
+1. Always explicit access modifier (public/protected/private)
+    ❌ _weight=...; increaseWeight(){} → ✅ private readonly _weight=...; public increaseWeight(){}
+2. Prefer readonly for properties
+    ❌ private _w=...; public weight=this._w.asObservable(); public name=this._name;
+    ✅ private readonly _w=...; public readonly weight=this._w.asObservable(); public get name(){return this._name;}
+3. Explicit types where TS can't infer
+    ❌ weapon=input.required(); name=input<string>('Name');
+    ✅ weapon=input.required<Weapon>(); name=input('Name'); // inferred
+4. Methods: explicit return type + param types
+    ❌ increaseWeight(w){...} calculateWeight(w){...}
+    ✅ increaseWeight(w:number):void{...} calculateWeight(w:number):number{...}
+5. Lifecycle-internal methods: private + lifecycle prefix
+    ❌ public setDefaultWeight(){} called from ngOnInit
+    ✅ private initWeight(){} called from ngOnInit
+
+[TEMPLATE METHODS]
+1. Event handlers: on* prefix
+    ❌ (click)="increaseWeight()" → ✅ (click)="onIncreaseWeight()"
+2. ❌ Methods in template (except signals/@cuiPure)
+    ❌ {{getWeight()}} → ✅ {{weight()}} via computed(() => this._weight()*Math.random())
+
+[PROPERTY ORDER - CLASSES]
+Access hierarchy: private[readonly] → protected[readonly] → public[readonly]
+Within each access level:
+    1. inject  2. CONSTANTS  3. default vars  4. signals
+    5. viewChild/contentChild  6. input/output  7. getters/setters
+
+[METHOD ORDER - CLASSES]
+Access: public → protected → private
+Within each: 1.Lifecycle(ngOnInit) → 2.on* handlers → 3.lifecycle-prefixed(init*) → 4.others
+
+[STYLES STANDARD]
+1. ❌ !important
+2. Colors ONLY from @cuby-ui variables
+    ❌ color:#888781; → ✅ color:$cui-base-500;
+3. Padding/shadow/font/flex ONLY via @cuby-ui mixins
+    ❌ display:flex;gap:8px; → ✅ @include cui-flex(8px);
+
+[SELECTORS - STYLES]
+1. Selectors: brief, no abbreviations
+2. Prefer class selectors
+    ❌ header{} #button{} → ✅ .header{} .button{}
+3. Modifiers via _ (underscore): &_active
+4. Nested elements via __ (double underscore): &__title
+5. Nesting strictly via & syntax
+
+[TEMPLATE STANDARD]
+1. Avoid wrapper hell — nesting only where needed
+2. Boolean attributes without value: ✅ required checked
+3. Binding over interpolation: ✅ [title]="'Text'"
+4. Transloco: single directive per template, not pipes
+
+[ATTRIBUTE SEQUENCE - TEMPLATE]
+1. HTML attrs (type/autofocus)
+2. Directives (cuiButton)
+3. Inputs ([disabled])
+4. Classes/Styles (class/style)
+5. Outputs ((click))
+"""
+
 SYSTEM_PROMPT = (
     "You are a senior technical code reviewer. "
     "Evaluate the provided diff and return ONLY valid JSON: "
@@ -107,7 +201,8 @@ class RuleEngine:
         return self._custom_rules
 
     def build_prompt(self, diff: str) -> str:
-        return REVIEW_PROMPT_TEMPLATE.format(rules=self.get_rules(), diff=diff)
+        rules = f"{self.get_rules()}\n{ANGULAR_RULES}"
+        return REVIEW_PROMPT_TEMPLATE.format(rules=rules, diff=diff)
 
     @property
     def source_label(self) -> str:
