@@ -22,6 +22,7 @@ import requests
 class Config:
     api_key: str
     threshold: int
+    model: str
     custom_rules: Optional[str]
     api_url: str = "https://api.groq.com/openai/v1/chat/completions"
     max_diff_length: int = 12000
@@ -33,7 +34,8 @@ class Config:
         return cls(
             api_key=sys.argv[1] if len(sys.argv) > 1 else os.getenv("GROQ_API_KEY", ""),
             threshold=int(sys.argv[2]) if len(sys.argv) > 2 else 70,
-            custom_rules=sys.argv[3] if len(sys.argv) > 3 else None
+            model=os.getenv("AI_MODEL", "llama3-70b-8192"),
+            custom_rules=sys.argv[3] if len(sys.argv) > 3 else None,
         )
 
 
@@ -115,36 +117,39 @@ class CodeReviewer:
             "Content-Type": "application/json",
         })
 
-    def debug_git():
-        cmds = [
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            ["git", "branch", "-a"],
-            ["git", "log", "--oneline", "-3"],
-            ["git", "remote", "-v"],
-        ]
-        print("\n🔍 GIT DEBUG INFO:", file=sys.stderr)
-        for cmd in cmds:
-            try:
-                res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                print(f"{' '.join(cmd)}:\n{res.stdout}", file=sys.stderr)
-            except Exception as e:
-                print(f"❌ {' '.join(cmd)}: {e}", file=sys.stderr)
-        print("-" * 50, file=sys.stderr)
-
     def get_diff(self) -> str:
-        self.debug_git()
-
         """Получает git diff текущего PR."""
         base_ref = os.getenv("GITHUB_BASE_REF", "main")
+        
+        # Проверяем наличие .git директории
+        if not os.path.exists(".git"):
+            print("⚠️ Директория .git не найдена. Запустите actions/checkout перед этим шагом.", file=sys.stderr)
+            return ""
+
+        # Проверяем наличие origin/{base_ref}
+        try:
+            subprocess.run(
+                ["git", "rev-parse", "--verify", f"origin/{base_ref}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            diff_cmd = ["git", "diff", f"origin/{base_ref}...HEAD"]
+        except subprocess.CalledProcessError:
+            # Если origin/{base_ref} нет, пробуем fallback
+            print(f"⚠️ Ветка origin/{base_ref} не найдена, пробуем fallback...", file=sys.stderr)
+            diff_cmd = ["git", "diff", "HEAD~1..HEAD"]
+
         try:
             result = subprocess.run(
-                ["git", "diff", f"origin/{base_ref}...HEAD"],
+                diff_cmd,
                 capture_output=True,
                 text=True,
                 check=True,
             )
             return result.stdout
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️ Ошибка git diff: {e.stderr}", file=sys.stderr)
             return ""
 
     def evaluate(self, diff: str) -> Tuple[int, str]:
@@ -189,7 +194,9 @@ class CodeReviewer:
 
         with open(output_file, "a") as f:
             f.write(f"ai_score={score}\n")
-            f.write(f"ai_comment={comment}\n")
+            # Экранируем переносы строк в комментарии для формата GITHUB_OUTPUT
+            safe_comment = comment.replace("\n", "%0A")
+            f.write(f"ai_comment={safe_comment}\n")
 
 
 # ==============================================================================
@@ -201,7 +208,7 @@ def main() -> None:
     rule_engine = RuleEngine(config.custom_rules, config.rules_timeout)
     reviewer = CodeReviewer(config, rule_engine)
 
-    print(f"🚀 AI Review | Порог: {config.threshold}")
+    print(f"🚀 AI Review | Модель: {config.model} | Порог: {config.threshold}")
     
     # Отображение источника правил
     if not config.custom_rules:
@@ -215,6 +222,10 @@ def main() -> None:
     print("-" * 50)
 
     diff = reviewer.get_diff()
+    
+    if not diff:
+        print("⚠️ Git diff пустой. Проверьте шаг actions/checkout (fetch-depth: 0).", file=sys.stderr)
+    
     score, comment = reviewer.evaluate(diff)
 
     print(f"🎯 Балл: {score}/100")
